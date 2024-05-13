@@ -1,4 +1,21 @@
 #include "header.h"
+#include <string.h>
+
+// Comparison function for sorting jobs by source name
+int compare_jobs(const void *a, const void *b)
+{
+  PROCESSING_JOB *jobA = *(PROCESSING_JOB **)a;
+  PROCESSING_JOB *jobB = *(PROCESSING_JOB **)b;
+  return strcmp(jobA->source_name, jobB->source_name);
+}
+
+void sort_jobs(PROCESSING_JOB **jobs)
+{
+  int count = 0;
+  while (jobs[count] != NULL)
+    count++; // Count how many jobs are in the array
+  qsort(jobs, count, sizeof(PROCESSING_JOB *), compare_jobs);
+}
 
 void PictureHost_FILTER(png_byte *h_In, png_byte *h_Out, int h, int w, float *h_filt)
 {
@@ -18,6 +35,21 @@ void PictureHost_FILTER(png_byte *h_In, png_byte *h_Out, int h, int w, float *h_
         h_Out[(Row * w + Col) * 3 + color] = b;
       }
     }
+}
+
+void execute_jobs_cpu(PROCESSING_JOB **jobs)
+{
+  int count = 0;
+  float *h_filter;
+  while (jobs[count] != NULL)
+  {
+    printf("Processing job: %s -> %s -> %s\n", jobs[count]->source_name, getStrAlgoFilterByType(jobs[count]->processing_algo), jobs[count]->dest_name);
+
+    h_filter = getAlgoFilterByType(jobs[count]->processing_algo);
+    PictureHost_FILTER(jobs[count]->source_raw, jobs[count]->dest_raw,
+                       jobs[count]->height, jobs[count]->width, h_filter);
+    count++;
+  }
 }
 
 __global__ void PictureDevice_FILTER(png_byte *d_In, png_byte *d_Out, int h, int w, float *d_Filter, int filterSize)
@@ -50,6 +82,7 @@ void execute_jobs_gpu(PROCESSING_JOB **jobs)
   int currentImageHeight = 0, currentImageWidth = 0;
 
   cudaMalloc(&d_Filter, 25 * sizeof(float)); // Assuming all filters are 5x5
+  sort_jobs(jobs);                           // Sort jobs by image before processing
 
   for (int i = 0; jobs[i] != NULL;)
   {
@@ -68,7 +101,6 @@ void execute_jobs_gpu(PROCESSING_JOB **jobs)
 
     do
     {
-      // Add printf statement here to indicate the current job
       printf("Processing job: %s -> %s -> %s\n", jobs[i]->source_name, getStrAlgoFilterByType(jobs[i]->processing_algo), jobs[i]->dest_name);
 
       cudaMemcpy(d_Filter, getAlgoFilterByType(jobs[i]->processing_algo), 25 * sizeof(float), cudaMemcpyHostToDevice);
@@ -87,19 +119,4 @@ void execute_jobs_gpu(PROCESSING_JOB **jobs)
 
   cudaFree(d_In);
   cudaFree(d_Filter);
-}
-
-void execute_jobs_cpu(PROCESSING_JOB **jobs)
-{
-  int count = 0;
-  float *h_filter;
-  while (jobs[count] != NULL)
-  {
-    printf("Processing job: %s -> %s -> %s\n", jobs[count]->source_name, getStrAlgoFilterByType(jobs[count]->processing_algo), jobs[count]->dest_name);
-
-    h_filter = getAlgoFilterByType(jobs[count]->processing_algo);
-    PictureHost_FILTER(jobs[count]->source_raw, jobs[count]->dest_raw,
-                       jobs[count]->height, jobs[count]->width, h_filter);
-    count++;
-  }
 }
