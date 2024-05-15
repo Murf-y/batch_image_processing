@@ -57,6 +57,14 @@ __global__ void PictureDevice_FILTER(png_byte *d_In, png_byte *d_Out, int h, int
   int Col = blockIdx.x * blockDim.x + threadIdx.x;
   int Row = blockIdx.y * blockDim.y + threadIdx.y;
 
+  // Its better to use shared memory because it reduces the number of global memory accesses
+  __shared__ float shared_Filter[25];
+
+  // Load filter into shared memory
+  if (threadIdx.x < filterSize && threadIdx.y < filterSize)
+    shared_Filter[threadIdx.y * filterSize + threadIdx.x] = d_Filter[threadIdx.y * filterSize + threadIdx.x];
+  __syncthreads();
+
   if (Row >= filterSize / 2 && Row < h - filterSize / 2 && Col >= filterSize / 2 && Col < w - filterSize / 2)
   {
     for (int color = 0; color < 3; color++)
@@ -67,14 +75,13 @@ __global__ void PictureDevice_FILTER(png_byte *d_In, png_byte *d_Out, int h, int
         for (int j = -filterSize / 2; j <= filterSize / 2; j++)
         {
           int pixelIndex = ((Row + i) * w + (Col + j)) * 3 + color;
-          sum += d_In[pixelIndex] * d_Filter[(i + filterSize / 2) * filterSize + j + filterSize / 2];
+          sum += d_In[pixelIndex] * shared_Filter[(i + filterSize / 2) * filterSize + j + filterSize / 2];
         }
       }
       d_Out[(Row * w + Col) * 3 + color] = fminf(fmaxf(sum, 0.0f), 255.0f);
     }
   }
 }
-
 void execute_jobs_gpu(PROCESSING_JOB **jobs)
 {
   png_byte *d_In, *d_Out;
@@ -87,6 +94,7 @@ void execute_jobs_gpu(PROCESSING_JOB **jobs)
   for (int i = 0; jobs[i] != NULL;)
   {
     // Check if we need to load new image data
+    // This prevents us from loading the same image multiple times
     if (i == 0 || strcmp(jobs[i]->source_name, jobs[i - 1]->source_name) != 0)
     {
       if (i != 0)
@@ -101,11 +109,11 @@ void execute_jobs_gpu(PROCESSING_JOB **jobs)
 
     do
     {
-      printf("Processing job: %s -> %s -> %s\n", jobs[i]->source_name, getStrAlgoFilterByType(jobs[i]->processing_algo), jobs[i]->dest_name);
+      // printf("Processing job: %s -> %s -> %s\n", jobs[i]->source_name, getStrAlgoFilterByType(jobs[i]->processing_algo), jobs[i]->dest_name);
 
       cudaMemcpy(d_Filter, getAlgoFilterByType(jobs[i]->processing_algo), 25 * sizeof(float), cudaMemcpyHostToDevice);
 
-      dim3 dimBlock(16, 16);
+      dim3 dimBlock(32, 32);
       dim3 dimGrid((currentImageWidth + dimBlock.x - 1) / dimBlock.x, (currentImageHeight + dimBlock.y - 1) / dimBlock.y);
       PictureDevice_FILTER<<<dimGrid, dimBlock>>>(d_In, d_Out, currentImageHeight, currentImageWidth, d_Filter, 5);
 
