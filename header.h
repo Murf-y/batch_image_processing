@@ -48,6 +48,7 @@ PROCESSING_JOB **prepare_jobs(char *filename);
 void write_jobs_output_files(PROCESSING_JOB **jobs);
 void execute_jobs_cpu(PROCESSING_JOB **jobs); // jobs NULL terminated
 void execute_jobs_gpu(PROCESSING_JOB **jobs); // jobs NULL terminated
+void execute_jobs_gpu_v2(PROCESSING_JOB **jobs);
 PROCESSING_ALGO getAlgoByName(char *algo_name);
 float *getAlgoFilterByType(PROCESSING_ALGO algo);
 char *getStrAlgoFilterByType(PROCESSING_ALGO algo);

@@ -128,3 +128,84 @@ void execute_jobs_gpu(PROCESSING_JOB **jobs)
   cudaFree(d_In);
   cudaFree(d_Filter);
 }
+
+__global__ void PictureDevice_FILTER_v2(png_byte *d_In, png_byte *d_Out, int h, int w, float *d_Filter, int filterSize)
+{
+    int Col = blockIdx.x * (blockDim.x - filterSize + 1) + threadIdx.x;
+    int Row = blockIdx.y * (blockDim.y - filterSize + 1) + threadIdx.y;
+
+    __shared__ float shared_Filter[25];
+    __shared__ png_byte shared_Image[(32 + 4) * (32 + 4) * 3]; // Adjust size based on maximum block size and filter overlap
+
+    // Load filter into shared memory
+    if (threadIdx.x < filterSize && threadIdx.y < filterSize) {
+        shared_Filter[threadIdx.y * filterSize + threadIdx.x] = d_Filter[threadIdx.y * filterSize + threadIdx.x];
+    }
+
+    // Load image data into shared memory
+    int sharedIndex = (threadIdx.y * (blockDim.x + filterSize - 1) + threadIdx.x) * 3;
+    int globalIndex = ((Row + (filterSize / 2)) * w + (Col + (filterSize / 2))) * 3;
+    if (Row + (filterSize / 2) < h && Col + (filterSize / 2) < w)
+        for (int c = 0; c < 3; c++) {
+            shared_Image[sharedIndex + c] = d_In[globalIndex + c];
+        }
+
+    __syncthreads();
+
+    if (threadIdx.x >= filterSize / 2 && threadIdx.x < blockDim.x - filterSize / 2 && threadIdx.y >= filterSize / 2 && threadIdx.y < blockDim.y - filterSize / 2 && Row < h - filterSize / 2 && Col < w - filterSize / 2) {
+        for (int color = 0; color < 3; color++) {
+            float sum = 0.0;
+            for (int i = -filterSize / 2; i <= filterSize / 2; i++) {
+                for (int j = -filterSize / 2; j <= filterSize / 2; j++) {
+                    int sharedPixelIndex = ((threadIdx.y + i) * (blockDim.x + filterSize - 1) + (threadIdx.x + j)) * 3 + color;
+                    sum += shared_Image[sharedPixelIndex] * shared_Filter[(i + filterSize / 2) * filterSize + j + filterSize / 2];
+                }
+            }
+            d_Out[(Row * w + Col) * 3 + color] = fminf(fmaxf(sum, 0.0f), 255.0f);
+        }
+    }
+}
+
+void execute_jobs_gpu_v2(PROCESSING_JOB **jobs)
+{
+    png_byte *d_In, *d_Out;
+    float *d_Filter;
+    int currentImageHeight = 0, currentImageWidth = 0;
+
+    cudaMalloc(&d_Filter, 25 * sizeof(float)); // Assuming all filters are 5x5
+    sort_jobs(jobs);                           // Sort jobs by image before processing
+
+    for (int i = 0; jobs[i] != NULL;)
+    {
+        if (i == 0 || strcmp(jobs[i]->source_name, jobs[i - 1]->source_name) != 0)
+        {
+            if (i != 0)
+                cudaFree(d_In);
+            cudaMalloc(&d_In, jobs[i]->height * jobs[i]->width * 3 * sizeof(png_byte));
+            cudaMemcpy(d_In, jobs[i]->source_raw, jobs[i]->height * jobs[i]->width * 3 * sizeof(png_byte), cudaMemcpyHostToDevice);
+            currentImageHeight = jobs[i]->height;
+            currentImageWidth = jobs[i]->width;
+        }
+
+        cudaMalloc(&d_Out, currentImageHeight * currentImageWidth * 3 * sizeof(png_byte));
+
+        do
+        {
+            cudaMemcpy(d_Filter, getAlgoFilterByType(jobs[i]->processing_algo), 25 * sizeof(float), cudaMemcpyHostToDevice);
+
+            dim3 dimBlock(32, 32);
+            dim3 dimGrid((currentImageWidth + dimBlock.x - 5) / (dimBlock.x - 4), (currentImageHeight + dimBlock.y - 5) / (dimBlock.y - 4));
+            PictureDevice_FILTER_v2<<<dimGrid, dimBlock>>>(d_In, d_Out, currentImageHeight, currentImageWidth, d_Filter, 5);
+
+            cudaMemcpy(jobs[i]->dest_raw, d_Out, currentImageHeight * currentImageWidth * 3 * sizeof(png_byte), cudaMemcpyDeviceToHost);
+
+            i++;
+        } while (jobs[i] != NULL && strcmp(jobs[i]->source_name, jobs[i - 1]->source_name) == 0);
+
+        cudaFree(d_Out);
+    }
+
+    cudaFree(d_In);
+    cudaFree(d_Filter);
+}
+
